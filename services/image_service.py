@@ -1,8 +1,11 @@
+import base64
 import os
 import random
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
+import requests
 import torch
 from PIL import Image
 
@@ -16,23 +19,34 @@ from services.comfyui_bootstrap import (
 add_comfyui_to_path()
 patch_torch_for_comfyui(torch)
 
-# ComfyUI nodes — disponibili solo se ComfyUI è nel PYTHONPATH o in COMFYUI_PATH
-try:
-    with block_optional_imports("comfy_kitchen"):
-        from nodes import NODE_CLASS_MAPPINGS
+REMOTE_IMAGE_WORKER_URL = os.getenv("REMOTE_IMAGE_WORKER_URL", "").rstrip("/")
 
-    UNETLoader = NODE_CLASS_MAPPINGS["UNETLoader"]()
-    CLIPLoader = NODE_CLASS_MAPPINGS["CLIPLoader"]()
-    VAELoader = NODE_CLASS_MAPPINGS["VAELoader"]()
-    CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
-    EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
-    KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
-    VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
-    COMFYUI_AVAILABLE = True
-    COMFYUI_IMPORT_ERROR = None
-except Exception as exc:
+if REMOTE_IMAGE_WORKER_URL:
     COMFYUI_AVAILABLE = False
-    COMFYUI_IMPORT_ERROR = exc
+    COMFYUI_IMPORT_ERROR = None
+else:
+    # ComfyUI nodes — disponibili solo se ComfyUI è nel PYTHONPATH o in COMFYUI_PATH
+    try:
+        import_context = (
+            block_optional_imports("comfy_kitchen")
+            if os.getenv("DISABLE_COMFY_KITCHEN") == "1"
+            else nullcontext()
+        )
+        with import_context:
+            from nodes import NODE_CLASS_MAPPINGS
+
+        UNETLoader = NODE_CLASS_MAPPINGS["UNETLoader"]()
+        CLIPLoader = NODE_CLASS_MAPPINGS["CLIPLoader"]()
+        VAELoader = NODE_CLASS_MAPPINGS["VAELoader"]()
+        CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
+        EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
+        KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
+        VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
+        COMFYUI_AVAILABLE = True
+        COMFYUI_IMPORT_ERROR = None
+    except Exception as exc:
+        COMFYUI_AVAILABLE = False
+        COMFYUI_IMPORT_ERROR = exc
 
 
 class ImageGenerationService:
@@ -43,6 +57,11 @@ class ImageGenerationService:
         self.models_loaded = False
 
     def load_models(self, checkpoint="sd_xl_turbo_1.0_fp16.safetensors"):
+        if REMOTE_IMAGE_WORKER_URL:
+            self.models_loaded = True
+            print(f"[ImageGenerationService] Uso worker remoto: {REMOTE_IMAGE_WORKER_URL}")
+            return
+
         if not COMFYUI_AVAILABLE:
             detail = f" Dettaglio: {COMFYUI_IMPORT_ERROR}" if COMFYUI_IMPORT_ERROR else ""
             raise RuntimeError(f"{comfyui_not_found_message()}{detail}")
@@ -60,6 +79,47 @@ class ImageGenerationService:
         if not self.models_loaded:
             self.load_models()
 
+    def _generate_remote(
+        self,
+        prompt,
+        negative_prompt,
+        width,
+        height,
+        steps,
+        cfg,
+        seed,
+        denoise,
+        output_dir,
+    ):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        response = requests.post(
+            f"{REMOTE_IMAGE_WORKER_URL}/generate-image",
+            json={
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "width": width,
+                "height": height,
+                "steps": steps,
+                "cfg": cfg,
+                "seed": seed,
+                "denoise": denoise,
+            },
+            timeout=int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900")),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("status") != "ok" or not payload.get("image_base64"):
+            raise RuntimeError(payload.get("error", "Risposta non valida dal worker remoto."))
+
+        if seed == 0:
+            seed = payload.get("seed", "remote")
+        out_path = os.path.join(output_dir, f"generated_{seed}.png")
+        image_data = payload["image_base64"]
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+        Path(out_path).write_bytes(base64.b64decode(image_data))
+        return out_path
+
     @torch.inference_mode()
     def generate(
         self,
@@ -74,6 +134,19 @@ class ImageGenerationService:
         output_dir: str = "/tmp/cg_pipeline/outputs",
     ) -> str:
         self._ensure_loaded()
+        if REMOTE_IMAGE_WORKER_URL:
+            return self._generate_remote(
+                prompt,
+                negative_prompt,
+                width,
+                height,
+                steps,
+                cfg,
+                seed,
+                denoise,
+                output_dir,
+            )
+
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         if seed == 0:

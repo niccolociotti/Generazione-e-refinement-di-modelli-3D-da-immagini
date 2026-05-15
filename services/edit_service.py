@@ -1,22 +1,29 @@
+import base64
 import os
 import random
 from pathlib import Path
 
 import numpy as np
+import requests
 import torch
 from PIL import Image
 
-try:
-    from nodes import (
-        CLIPTextEncode,
-        KSampler,
-        VAEDecode,
-        VAEEncode,
-        SetLatentNoiseMask,
-    )
-    COMFYUI_AVAILABLE = True
-except ImportError:
+REMOTE_IMAGE_WORKER_URL = os.getenv("REMOTE_IMAGE_WORKER_URL", "").rstrip("/")
+
+if REMOTE_IMAGE_WORKER_URL:
     COMFYUI_AVAILABLE = False
+else:
+    try:
+        from nodes import (
+            CLIPTextEncode,
+            KSampler,
+            VAEDecode,
+            VAEEncode,
+            SetLatentNoiseMask,
+        )
+        COMFYUI_AVAILABLE = True
+    except Exception:
+        COMFYUI_AVAILABLE = False
 
 
 class ImageEditService:
@@ -28,6 +35,9 @@ class ImageEditService:
 
     def set_models(self, unet, clip, vae):
         """Permette di condividere i modelli già caricati da ImageGenerationService."""
+        if REMOTE_IMAGE_WORKER_URL:
+            self.models_loaded = True
+            return
         self.unet = unet
         self.clip = clip
         self.vae  = vae
@@ -59,6 +69,19 @@ class ImageEditService:
         denoise:   0.0 = nessun cambiamento, 1.0 = rigenerazione totale
         """
         self._ensure_loaded()
+        if REMOTE_IMAGE_WORKER_URL:
+            return self._inpaint_remote(
+                image_path,
+                mask_path,
+                prompt,
+                negative_prompt,
+                seed,
+                steps,
+                cfg,
+                denoise,
+                output_dir,
+            )
+
         if not COMFYUI_AVAILABLE:
             raise RuntimeError("ComfyUI non trovato nel PYTHONPATH.")
 
@@ -98,4 +121,48 @@ class ImageEditService:
         ).save(out_path)
 
         print(f"[ImageEditService] Inpainting salvato: {out_path}")
+        return out_path
+
+    def _inpaint_remote(
+        self,
+        image_path,
+        mask_path,
+        prompt,
+        negative_prompt,
+        seed,
+        steps,
+        cfg,
+        denoise,
+        output_dir,
+    ):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        image_base64 = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+        mask_base64 = base64.b64encode(Path(mask_path).read_bytes()).decode("ascii")
+
+        response = requests.post(
+            f"{REMOTE_IMAGE_WORKER_URL}/edit-image",
+            json={
+                "image_base64": image_base64,
+                "mask_base64": mask_base64,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "denoise": denoise,
+            },
+            timeout=int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900")),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("status") != "ok" or not payload.get("image_base64"):
+            raise RuntimeError(payload.get("error", "Risposta non valida dal worker remoto."))
+
+        if seed == 0:
+            seed = payload.get("seed", "remote")
+        out_path = os.path.join(output_dir, f"inpaint_{seed}.png")
+        image_data = payload["image_base64"]
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+        Path(out_path).write_bytes(base64.b64decode(image_data))
         return out_path
