@@ -1,6 +1,7 @@
 import base64
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -56,6 +57,13 @@ def generate_image():
     if not data.get("prompt"):
         return jsonify({"error": "Campo 'prompt' obbligatorio."}), 400
 
+    started_at = time.time()
+    print(
+        "[colab_worker] /generate-image start "
+        f"prompt={data['prompt']!r} size={data.get('width', 1024)}x{data.get('height', 1024)} "
+        f"steps={data.get('steps', 9)} seed={data.get('seed', 0)}",
+        flush=True,
+    )
     try:
         output_path = image_service.generate(
             prompt=data["prompt"],
@@ -69,8 +77,13 @@ def generate_image():
             output_dir=tempfile.mkdtemp(prefix="cg_worker_"),
         )
     except Exception as exc:
+        print(f"[colab_worker] /generate-image error after {time.time() - started_at:.1f}s: {exc}", flush=True)
         return jsonify({"error": str(exc)}), 500
 
+    print(
+        f"[colab_worker] /generate-image done after {time.time() - started_at:.1f}s: {output_path}",
+        flush=True,
+    )
     return jsonify({
         "status": "ok",
         "image_base64": file_to_base64(output_path),
@@ -91,6 +104,12 @@ def edit_image():
     work_dir = Path(tempfile.mkdtemp(prefix="cg_worker_edit_"))
     image_path = work_dir / "image.png"
     mask_path = work_dir / "mask.png"
+    started_at = time.time()
+    print(
+        "[colab_worker] /edit-image start "
+        f"prompt={data['prompt']!r} steps={data.get('steps', 20)} seed={data.get('seed', 0)}",
+        flush=True,
+    )
     base64_to_file(data["image_base64"], image_path)
     base64_to_file(data["mask_base64"], mask_path)
 
@@ -107,8 +126,10 @@ def edit_image():
             output_dir=str(work_dir),
         )
     except Exception as exc:
+        print(f"[colab_worker] /edit-image error after {time.time() - started_at:.1f}s: {exc}", flush=True)
         return jsonify({"error": str(exc)}), 500
 
+    print(f"[colab_worker] /edit-image done after {time.time() - started_at:.1f}s: {output_path}", flush=True)
     return jsonify({
         "status": "ok",
         "image_base64": file_to_base64(output_path),

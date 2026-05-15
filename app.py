@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
@@ -65,6 +66,12 @@ def generate_image():
         return jsonify({"error": "Campo 'prompt' obbligatorio."}), 400
 
     session_dir = make_session_dir(data.get("session_id"))
+    started_at = time.time()
+    print(
+        "[app] /generate-image start "
+        f"session={Path(session_dir).name} prompt={data['prompt']!r}",
+        flush=True,
+    )
     try:
         output_path = image_service.generate(
             prompt=data["prompt"],
@@ -77,8 +84,10 @@ def generate_image():
             output_dir=session_dir,
         )
     except Exception as e:
+        print(f"[app] /generate-image error after {time.time() - started_at:.1f}s: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
 
+    print(f"[app] /generate-image done after {time.time() - started_at:.1f}s: {output_path}", flush=True)
     return jsonify({
         "status": "ok",
         "image_path": output_path,

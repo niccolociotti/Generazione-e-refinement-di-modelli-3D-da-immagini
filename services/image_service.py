@@ -1,6 +1,7 @@
 import base64
 import os
 import random
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -92,6 +93,13 @@ class ImageGenerationService:
         output_dir,
     ):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        started_at = time.time()
+        print(
+            "[ImageGenerationService] Invio job al worker remoto "
+            f"{REMOTE_IMAGE_WORKER_URL}/generate-image "
+            f"size={width}x{height} steps={steps} seed={seed}",
+            flush=True,
+        )
         response = requests.post(
             f"{REMOTE_IMAGE_WORKER_URL}/generate-image",
             json={
@@ -106,6 +114,10 @@ class ImageGenerationService:
             },
             timeout=int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900")),
         )
+        print(
+            f"[ImageGenerationService] Risposta worker ricevuta dopo {time.time() - started_at:.1f}s",
+            flush=True,
+        )
         response.raise_for_status()
         payload = response.json()
         if payload.get("status") != "ok" or not payload.get("image_base64"):
@@ -118,6 +130,7 @@ class ImageGenerationService:
         if "," in image_data:
             image_data = image_data.split(",", 1)[1]
         Path(out_path).write_bytes(base64.b64decode(image_data))
+        print(f"[ImageGenerationService] Immagine remota salvata: {out_path}", flush=True)
         return out_path
 
     @torch.inference_mode()
