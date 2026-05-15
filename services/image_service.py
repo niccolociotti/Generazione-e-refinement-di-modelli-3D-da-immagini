@@ -94,33 +94,65 @@ class ImageGenerationService:
     ):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         started_at = time.time()
+        request_payload = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "cfg": cfg,
+            "seed": seed,
+            "denoise": denoise,
+        }
         print(
             "[ImageGenerationService] Invio job al worker remoto "
-            f"{REMOTE_IMAGE_WORKER_URL}/generate-image "
+            f"{REMOTE_IMAGE_WORKER_URL}/jobs/generate-image "
             f"size={width}x{height} steps={steps} seed={seed}",
             flush=True,
         )
         response = requests.post(
-            f"{REMOTE_IMAGE_WORKER_URL}/generate-image",
-            json={
-                "prompt": prompt,
-                "negative_prompt": negative_prompt,
-                "width": width,
-                "height": height,
-                "steps": steps,
-                "cfg": cfg,
-                "seed": seed,
-                "denoise": denoise,
-            },
-            timeout=int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900")),
+            f"{REMOTE_IMAGE_WORKER_URL}/jobs/generate-image",
+            json=request_payload,
+            timeout=30,
         )
+        response.raise_for_status()
+        payload = response.json()
+        job_id = payload.get("job_id")
+        if not job_id:
+            raise RuntimeError(payload.get("error", "Il worker remoto non ha restituito job_id."))
+
+        timeout = int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900"))
+        poll_interval = float(os.getenv("REMOTE_IMAGE_POLL_INTERVAL", "5"))
+        deadline = time.time() + timeout
+        last_status_log = 0
+        while time.time() < deadline:
+            status_response = requests.get(
+                f"{REMOTE_IMAGE_WORKER_URL}/jobs/{job_id}",
+                timeout=30,
+            )
+            status_response.raise_for_status()
+            payload = status_response.json()
+            status = payload.get("status")
+            elapsed = time.time() - started_at
+            if elapsed - last_status_log >= 15:
+                print(
+                    f"[ImageGenerationService] Job remoto {job_id} status={status} elapsed={elapsed:.1f}s",
+                    flush=True,
+                )
+                last_status_log = elapsed
+            if status == "done":
+                break
+            if status == "error":
+                raise RuntimeError(payload.get("error", "Job remoto fallito."))
+            time.sleep(poll_interval)
+        else:
+            raise TimeoutError(f"Timeout job remoto {job_id} dopo {timeout}s")
+
         print(
             f"[ImageGenerationService] Risposta worker ricevuta dopo {time.time() - started_at:.1f}s",
             flush=True,
         )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("status") != "ok" or not payload.get("image_base64"):
+        if payload.get("status") != "done" or not payload.get("image_base64"):
             raise RuntimeError(payload.get("error", "Risposta non valida dal worker remoto."))
 
         if seed == 0:

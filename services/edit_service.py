@@ -1,6 +1,7 @@
 import base64
 import os
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -140,7 +141,7 @@ class ImageEditService:
         mask_base64 = base64.b64encode(Path(mask_path).read_bytes()).decode("ascii")
 
         response = requests.post(
-            f"{REMOTE_IMAGE_WORKER_URL}/edit-image",
+            f"{REMOTE_IMAGE_WORKER_URL}/jobs/edit-image",
             json={
                 "image_base64": image_base64,
                 "mask_base64": mask_base64,
@@ -151,11 +152,43 @@ class ImageEditService:
                 "cfg": cfg,
                 "denoise": denoise,
             },
-            timeout=int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900")),
+            timeout=30,
         )
         response.raise_for_status()
         payload = response.json()
-        if payload.get("status") != "ok" or not payload.get("image_base64"):
+        job_id = payload.get("job_id")
+        if not job_id:
+            raise RuntimeError(payload.get("error", "Il worker remoto non ha restituito job_id."))
+
+        started_at = time.time()
+        timeout = int(os.getenv("REMOTE_IMAGE_TIMEOUT", "900"))
+        poll_interval = float(os.getenv("REMOTE_IMAGE_POLL_INTERVAL", "5"))
+        deadline = time.time() + timeout
+        last_status_log = 0
+        while time.time() < deadline:
+            status_response = requests.get(
+                f"{REMOTE_IMAGE_WORKER_URL}/jobs/{job_id}",
+                timeout=30,
+            )
+            status_response.raise_for_status()
+            payload = status_response.json()
+            status = payload.get("status")
+            elapsed = time.time() - started_at
+            if elapsed - last_status_log >= 15:
+                print(
+                    f"[ImageEditService] Job remoto {job_id} status={status} elapsed={elapsed:.1f}s",
+                    flush=True,
+                )
+                last_status_log = elapsed
+            if status == "done":
+                break
+            if status == "error":
+                raise RuntimeError(payload.get("error", "Job remoto fallito."))
+            time.sleep(poll_interval)
+        else:
+            raise TimeoutError(f"Timeout job remoto {job_id} dopo {timeout}s")
+
+        if payload.get("status") != "done" or not payload.get("image_base64"):
             raise RuntimeError(payload.get("error", "Risposta non valida dal worker remoto."))
 
         if seed == 0:
