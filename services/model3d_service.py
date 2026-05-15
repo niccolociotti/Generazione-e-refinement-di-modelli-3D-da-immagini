@@ -1,9 +1,9 @@
 
-model3d_service
 import os
 from pathlib import Path
 
-class model3dGenerationService:
+
+class Model3DGenerationService:
     def __init__(self):
         self.models_loaded = True
 

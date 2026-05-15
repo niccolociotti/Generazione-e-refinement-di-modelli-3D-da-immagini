@@ -1,0 +1,43 @@
+flask>=3.0,<4.0
+
+# Su questo ambiente macOS/conda pip espone torch fino a 2.2.2.
+torch>=2.2,<2.3
+torchvision
+torchaudio
+torchsde
+
+diffusers>=0.27
+transformers>=4.28.1,<5
+tokenizers>=0.13.3
+sentencepiece
+accelerate>=0.29
+safetensors>=0.4.2
+einops>=0.7
+
+Pillow>=10.0
+# PyTorch builds in this project currently expect the NumPy 1.x ABI.
+numpy>=1.26,<2
+opencv-python>=4.9,<4.10
+
+requests>=2.31
+pyyaml>=6.0
+tqdm>=4.66
+aiohttp>=3.11.8
+yarl>=1.18.0
+scipy
+psutil
+alembic
+SQLAlchemy>=2.0.0
+filelock
+av>=14.2.0
+# comfy-kitchen richiede API PyTorch non disponibili con torch 2.2.2 su questo Mac.
+# Se installato, i servizi lo disabilitano durante l'import di ComfyUI.
+comfy-aimdo==0.3.0
+simpleeval>=1.0.0
+blake3
+kornia>=0.7.1
+spandrel
+pydantic~=2.0
+pydantic-settings~=2.0
+PyOpenGL
+glfw

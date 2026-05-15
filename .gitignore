@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+.env
+
+# Pesi modelli — NON committare
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+models/
+ComfyUI/models/
+
+# Output runtime
+runs/
+data/
+
+.ipynb_checkpoints/
+.DS_Store
+.vscode/
+.idea/
