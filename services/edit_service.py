@@ -9,22 +9,33 @@ import requests
 import torch
 from PIL import Image
 
+from services.comfyui_bootstrap import add_comfyui_to_path, block_optional_imports
+
+
+add_comfyui_to_path()
 REMOTE_IMAGE_WORKER_URL = os.getenv("REMOTE_IMAGE_WORKER_URL", "").rstrip("/")
+
+
+def remote_image_worker_url():
+    return os.getenv("REMOTE_IMAGE_WORKER_URL", "").rstrip("/")
 
 if REMOTE_IMAGE_WORKER_URL:
     COMFYUI_AVAILABLE = False
 else:
     try:
-        from nodes import (
-            CLIPTextEncode,
-            KSampler,
-            VAEDecode,
-            VAEEncode,
-            SetLatentNoiseMask,
-        )
+        with block_optional_imports("comfy_kitchen"):
+            from nodes import NODE_CLASS_MAPPINGS
+
+        CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
+        KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
+        VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
+        VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
+        SetLatentNoiseMask = NODE_CLASS_MAPPINGS["SetLatentNoiseMask"]()
         COMFYUI_AVAILABLE = True
-    except Exception:
+        COMFYUI_IMPORT_ERROR = None
+    except Exception as exc:
         COMFYUI_AVAILABLE = False
+        COMFYUI_IMPORT_ERROR = exc
 
 
 class ImageEditService:
@@ -36,7 +47,7 @@ class ImageEditService:
 
     def set_models(self, unet, clip, vae):
         """Permette di condividere i modelli già caricati da ImageGenerationService."""
-        if REMOTE_IMAGE_WORKER_URL:
+        if remote_image_worker_url():
             self.models_loaded = True
             return
         self.unet = unet
@@ -70,7 +81,7 @@ class ImageEditService:
         denoise:   0.0 = nessun cambiamento, 1.0 = rigenerazione totale
         """
         self._ensure_loaded()
-        if REMOTE_IMAGE_WORKER_URL:
+        if remote_image_worker_url():
             return self._inpaint_remote(
                 image_path,
                 mask_path,
@@ -84,7 +95,8 @@ class ImageEditService:
             )
 
         if not COMFYUI_AVAILABLE:
-            raise RuntimeError("ComfyUI non trovato nel PYTHONPATH.")
+            detail = f" Dettaglio: {COMFYUI_IMPORT_ERROR}" if "COMFYUI_IMPORT_ERROR" in globals() else ""
+            raise RuntimeError(f"ComfyUI non trovato nel PYTHONPATH.{detail}")
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -136,12 +148,16 @@ class ImageEditService:
         denoise,
         output_dir,
     ):
+        worker_url = remote_image_worker_url()
+        if not worker_url:
+            raise RuntimeError("REMOTE_IMAGE_WORKER_URL non impostato per l'editing remoto.")
+
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         image_base64 = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
         mask_base64 = base64.b64encode(Path(mask_path).read_bytes()).decode("ascii")
 
         response = requests.post(
-            f"{REMOTE_IMAGE_WORKER_URL}/jobs/edit-image",
+            f"{worker_url}/jobs/edit-image",
             json={
                 "image_base64": image_base64,
                 "mask_base64": mask_base64,
@@ -167,7 +183,7 @@ class ImageEditService:
         last_status_log = 0
         while time.time() < deadline:
             status_response = requests.get(
-                f"{REMOTE_IMAGE_WORKER_URL}/jobs/{job_id}",
+                f"{worker_url}/jobs/{job_id}",
                 timeout=30,
             )
             status_response.raise_for_status()
