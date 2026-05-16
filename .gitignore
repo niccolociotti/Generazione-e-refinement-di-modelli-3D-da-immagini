@@ -15,7 +15,6 @@ models/
 ComfyUI/models/
 
 # Output runtime
-runs/
 data/
 
 .ipynb_checkpoints/

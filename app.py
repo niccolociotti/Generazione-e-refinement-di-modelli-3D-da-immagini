@@ -6,6 +6,8 @@ from flask import Flask, request, jsonify, send_file
 from utils.storage import RUNS_DIR, ensure_dirs, make_session_dir, save_base64_image
 from services.image_service import ImageGenerationService
 from services.edit_service import ImageEditService
+from services.image_service import remote_image_worker_url as image_worker_url
+from services.edit_service import remote_image_worker_url as edit_worker_url
 from services.model3d_service import Model3DGenerationService   # ← nome corretto
 
 app = Flask(__name__)
@@ -47,7 +49,12 @@ def public_file_url(path):
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({
+        "status": "ok",
+        "remote_image_worker_url": os.getenv("REMOTE_IMAGE_WORKER_URL", ""),
+        "image_service_worker_url": image_worker_url(),
+        "edit_service_worker_url": edit_worker_url(),
+    })
 
 
 @app.get("/files/<path:relative_path>")
@@ -111,6 +118,12 @@ def edit_image():
     if not mask_path:
         return jsonify({"error": "Serve 'mask_path' oppure 'mask_base64'."}), 400
 
+    started_at = time.time()
+    print(
+        "[app] /edit-image start "
+        f"session={Path(session_dir).name} image={data['image_path']!r} prompt={data['prompt']!r}",
+        flush=True,
+    )
     try:
         output_path = edit_service.inpaint(
             image_path=data["image_path"],
@@ -124,8 +137,10 @@ def edit_image():
             output_dir=session_dir,
         )
     except Exception as e:
+        print(f"[app] /edit-image error after {time.time() - started_at:.1f}s: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
 
+    print(f"[app] /edit-image done after {time.time() - started_at:.1f}s: {output_path}", flush=True)
     return jsonify({
         "status": "ok",
         "edited_image_path": output_path,
