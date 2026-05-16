@@ -22,6 +22,10 @@ patch_torch_for_comfyui(torch)
 
 REMOTE_IMAGE_WORKER_URL = os.getenv("REMOTE_IMAGE_WORKER_URL", "").rstrip("/")
 
+
+def remote_image_worker_url():
+    return os.getenv("REMOTE_IMAGE_WORKER_URL", "").rstrip("/")
+
 if REMOTE_IMAGE_WORKER_URL:
     COMFYUI_AVAILABLE = False
     COMFYUI_IMPORT_ERROR = None
@@ -58,9 +62,10 @@ class ImageGenerationService:
         self.models_loaded = False
 
     def load_models(self, checkpoint="sd_xl_turbo_1.0_fp16.safetensors"):
-        if REMOTE_IMAGE_WORKER_URL:
+        worker_url = remote_image_worker_url()
+        if worker_url:
             self.models_loaded = True
-            print(f"[ImageGenerationService] Uso worker remoto: {REMOTE_IMAGE_WORKER_URL}")
+            print(f"[ImageGenerationService] Uso worker remoto: {worker_url}")
             return
 
         if not COMFYUI_AVAILABLE:
@@ -93,6 +98,10 @@ class ImageGenerationService:
         output_dir,
     ):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        worker_url = remote_image_worker_url()
+        if not worker_url:
+            raise RuntimeError("REMOTE_IMAGE_WORKER_URL non impostato per la generazione remota.")
+
         started_at = time.time()
         request_payload = {
             "prompt": prompt,
@@ -106,12 +115,12 @@ class ImageGenerationService:
         }
         print(
             "[ImageGenerationService] Invio job al worker remoto "
-            f"{REMOTE_IMAGE_WORKER_URL}/jobs/generate-image "
+            f"{worker_url}/jobs/generate-image "
             f"size={width}x{height} steps={steps} seed={seed}",
             flush=True,
         )
         response = requests.post(
-            f"{REMOTE_IMAGE_WORKER_URL}/jobs/generate-image",
+            f"{worker_url}/jobs/generate-image",
             json=request_payload,
             timeout=30,
         )
@@ -126,11 +135,21 @@ class ImageGenerationService:
         deadline = time.time() + timeout
         last_status_log = 0
         while time.time() < deadline:
-            status_response = requests.get(
-                f"{REMOTE_IMAGE_WORKER_URL}/jobs/{job_id}",
-                timeout=30,
-            )
-            status_response.raise_for_status()
+            try:
+                status_response = requests.get(
+                    f"{worker_url}/jobs/{job_id}",
+                    timeout=30,
+                )
+                status_response.raise_for_status()
+            except requests.RequestException as exc:
+                elapsed = time.time() - started_at
+                print(
+                    f"[ImageGenerationService] Poll job remoto {job_id} fallito "
+                    f"elapsed={elapsed:.1f}s: {exc}. Riprovo...",
+                    flush=True,
+                )
+                time.sleep(poll_interval)
+                continue
             payload = status_response.json()
             status = payload.get("status")
             elapsed = time.time() - started_at
@@ -179,7 +198,7 @@ class ImageGenerationService:
         output_dir: str = "/tmp/cg_pipeline/outputs",
     ) -> str:
         self._ensure_loaded()
-        if REMOTE_IMAGE_WORKER_URL:
+        if remote_image_worker_url():
             return self._generate_remote(
                 prompt,
                 negative_prompt,

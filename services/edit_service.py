@@ -182,11 +182,21 @@ class ImageEditService:
         deadline = time.time() + timeout
         last_status_log = 0
         while time.time() < deadline:
-            status_response = requests.get(
-                f"{worker_url}/jobs/{job_id}",
-                timeout=30,
-            )
-            status_response.raise_for_status()
+            try:
+                status_response = requests.get(
+                    f"{worker_url}/jobs/{job_id}",
+                    timeout=30,
+                )
+                status_response.raise_for_status()
+            except requests.RequestException as exc:
+                elapsed = time.time() - started_at
+                print(
+                    f"[ImageEditService] Poll job remoto {job_id} fallito "
+                    f"elapsed={elapsed:.1f}s: {exc}. Riprovo...",
+                    flush=True,
+                )
+                time.sleep(poll_interval)
+                continue
             payload = status_response.json()
             status = payload.get("status")
             elapsed = time.time() - started_at
